@@ -6,6 +6,10 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <iostream>
+#include <thread>
+#include <vector>
+#include <mutex>
+
 
 int const PORT = 5000;
 
@@ -41,6 +45,25 @@ class Socket
 			close(socket_fd);
 		}
 
+		// Delete copy constructor and copy assignment operator to prevent copying
+		Socket(const Socket&) = delete;
+		Socket& operator=(const Socket&) = delete;
+		// Implement move constructor and move assignment operator for ownership transfer
+		Socket(Socket&& other) noexcept : socket_fd(other.socket_fd)
+		{
+			other.socket_fd = -1; // Invalidate the moved-from object
+		}
+
+		Socket& operator=(Socket&& other) noexcept
+		{
+			if (this != &other)
+			{
+				close(socket_fd); // Close the current socket
+				socket_fd = other.socket_fd;
+				other.socket_fd = -1; // Invalidate the moved-from object
+			}
+			return *this;
+		}
 
 		// Bind the socket to the local address Ipv4 or Ipv6
 		
@@ -104,18 +127,38 @@ class Socket
 		{
 			return socket_fd;
 		}
-
+	
 };
+
+
+
+std::mutex cout_mutex;
+uint32_t client_id = 0;
+
+void handle_client(Socket sock_comm){
+	
+	std::lock_guard<std::mutex> lock(cout_mutex);
+	client_id++;
+	// make id human readable and add /n at the end
+	std::string id_str = std::to_string(client_id) + "\n";
+	// send the id to the client
+	sock_comm.send(id_str.c_str(), id_str.size());
+};
+
 int main()
 {
 	int socketListen;
 	struct sockaddr_in socketAddr_IPV4{};
 
 	Socket socket_server(AF_INET, SOCK_STREAM, 0); /* 0 means we use the default protocol of SOCK_STREAM (tcp) */
+	//std::atomic<uint32_t> client_id_counter{0};
 
 	
 	char buffer[1024];
 	char broadcastMessage[] = "Hello from server";
+
+	// vector of threads to handle multiple clients
+	std::vector<std::thread> threads;
 
 	// Prepare the adress for the local binding
 
@@ -139,8 +182,9 @@ int main()
 		std::cout << "Waiting for incoming connections...\n";
 		sockaddr_in clientAddr{};
 		Socket socket_communication = socket_server.accept(clientAddr);
-		socket_communication.recv(buffer, sizeof(buffer));
-		socket_communication.send(broadcastMessage, sizeof(broadcastMessage));
+		//socket_communication.recv(buffer, sizeof(buffer));
+		std::thread t(handle_client, std::move(socket_communication));
+		t.detach();
 		std::cout << "Client IP: " << inet_ntoa(clientAddr.sin_addr) << ", Port: " << ntohs(clientAddr.sin_port) << "\n";
         }
 
