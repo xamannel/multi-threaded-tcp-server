@@ -9,6 +9,12 @@
 #include <thread>
 #include <vector>
 #include <mutex>
+#include <chrono>
+#include <csignal>
+#include <condition_variable>
+#include <atomic>
+
+
 
 
 int const PORT = 5000;
@@ -121,7 +127,7 @@ class Socket
 			{
 				throw std::system_error(errno, std::generic_category(), "send failed");
 			}
-			std::cout << "Sent " << bytesSent << " bytes\n";
+			//std::cout << "Sent " << bytesSent << " bytes\n";
 		}
 		int getSocketFD() const
 		{
@@ -132,19 +138,49 @@ class Socket
 
 
 
-std::mutex cout_mutex;
-uint32_t client_id = 0;
+std::mutex mtx;
+std::atomic<uint32_t> client_id{0};
+bool shutdown_server = false;
 
-void handle_client(Socket sock_comm){
+void handle_client(Socket * sock_comm){
 	
-	std::lock_guard<std::mutex> lock(cout_mutex);
-	client_id++;
-	// make id human readable and add /n at the end
-	std::string id_str = std::to_string(client_id) + "\n";
-	// send the id to the client
-	sock_comm.send(id_str.c_str(), id_str.size());
+	// Each second the thread will generate and send a new unique 32 bit ID to the client
+	while(!shutdown_server){
+
+		
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+		//std::lock_guard<std::mutex> lock(mtx);
+		client_id++;
+		// make id human readable and add /n at the end
+		std::string id_str = std::to_string(client_id) + "\n";
+		// send the id to the client
+		sock_comm->send(id_str.c_str(), id_str.size());
+	}
+
 };
 
+
+
+
+void signal_handler(int signal)
+{
+	if (signal == SIGINT)
+	{
+		shutdown_server = true;
+	}
+};
+
+void server_shutdown(const std::vector<std::unique_ptr<Socket>>& client_sockets)
+{
+	for (const auto& sock : client_sockets)
+	{
+		std::string shutdown_msg = "Server is shutting down. Goodbye!\n";
+		sock->send(shutdown_msg.c_str(), shutdown_msg.size());
+	}
+
+
+};
+	
 int main()
 {
 	int socketListen;
@@ -159,6 +195,7 @@ int main()
 
 	// vector of threads to handle multiple clients
 	std::vector<std::thread> threads;
+	std::vector<std::unique_ptr<Socket>> client_sockets;
 
 	// Prepare the adress for the local binding
 
@@ -176,18 +213,27 @@ int main()
 	
 	// Loop for incoming connections 
 	
+	std::signal(SIGINT, signal_handler);
 	bool running = true;
-	while (running)
+	while (!shutdown_server)
 	{
 		std::cout << "Waiting for incoming connections...\n";
 		sockaddr_in clientAddr{};
-		Socket socket_communication = socket_server.accept(clientAddr);
+		auto socket_communication = std::make_unique<Socket>(socket_server.accept(clientAddr));
+		//Socket socket_communication = socket_server.accept(clientAddr);
+		// Store the client socket for future shutdown
+		threads.push_back(std::thread(handle_client, socket_communication.get()));
+		client_sockets.push_back(std::move(socket_communication));
 		//socket_communication.recv(buffer, sizeof(buffer));
-		std::thread t(handle_client, std::move(socket_communication));
-		t.detach();
 		std::cout << "Client IP: " << inet_ntoa(clientAddr.sin_addr) << ", Port: " << ntohs(clientAddr.sin_port) << "\n";
         }
+	server_shutdown(client_sockets);
+	for (auto& th : threads)
+	{
+		if (th.joinable())
+			th.join();
+	}
 
 	return 0;
 
-}
+	}
